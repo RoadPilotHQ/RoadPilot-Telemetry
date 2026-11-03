@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.24)
+project(roadpilot_scs_plugin LANGUAGES CXX)
+
+if(NOT WIN32)
+  message(FATAL_ERROR "The SCS plugin transport currently targets Windows named pipes.")
+endif()
+if(NOT DEFINED SCS_SDK_ROOT OR NOT EXISTS "${SCS_SDK_ROOT}/include/scssdk_telemetry.h")
+  message(FATAL_ERROR "Set SCS_SDK_ROOT to an extracted SCS Telemetry SDK directory.")
+endif()
+
+add_library(roadpilot_telemetry_plugin SHARED src/plugin.cpp src/roadpilot_telemetry_plugin.def)
+target_compile_features(roadpilot_telemetry_plugin PRIVATE cxx_std_17)
+target_include_directories(roadpilot_telemetry_plugin PRIVATE "${SCS_SDK_ROOT}/include" "${SCS_SDK_ROOT}/include/common" "${SCS_SDK_ROOT}/include/eurotrucks2" "${SCS_SDK_ROOT}/include/amtrucks")
+target_compile_definitions(roadpilot_telemetry_plugin PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(roadpilot_telemetry_plugin PRIVATE advapi32)
+set_target_properties(roadpilot_telemetry_plugin PROPERTIES OUTPUT_NAME "roadpilot-telemetry")
