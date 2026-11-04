@@ -21,7 +21,7 @@ The schema 2 plugin and reader pass automated tests without a game: the serializ
 ## Layout
 
 - `plugin/` — native in-game SCS plugin (C++17, CMake), its serializer and tests.
-- `client/` — Rust crate `roadpilot-telemetry-client`: frame model, decoding, validation, ordering, named-pipe server and a console reader.
+- `client/` — Rust crate `roadpilot-telemetry-client`: frame model, decoding, validation, ordering, named-pipe server and a console reader that prints the newest frame as one JSON line on Enter ([docs/FRAME-SNAPSHOT.md](docs/FRAME-SNAPSHOT.md)).
 - `schemas/` — JSON Schema files and the shared test fixtures.
 - `docs/` — [architecture](docs/ARCHITECTURE.md), [protocol schema 2](docs/PROTOCOL-V2.md), [schema 1 draft](docs/PROTOCOL-DRAFT.md).
 

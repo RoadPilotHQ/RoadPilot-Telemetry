@@ -13,6 +13,7 @@ use std::time::Instant;
 #[cfg(windows)]
 pub mod named_pipe;
 pub mod ordering;
+pub mod snapshot;
 pub mod v1;
 pub mod v2;
 

@@ -3,12 +3,20 @@
 #[cfg(not(windows))]
 compile_error!("The RoadPilot telemetry reader currently requires Windows named pipes.");
 
-use roadpilot_telemetry_client::{ReceivedTelemetryFrame, named_pipe::serve_latest};
-use std::{
-    io::{self, Write},
-    time::Duration,
+use roadpilot_telemetry_client::{
+    ReceivedTelemetryFrame,
+    named_pipe::serve_latest,
+    snapshot::{FrameId, snapshot},
 };
-use tokio::{runtime::Builder, sync::watch, time::interval};
+use std::{
+    io::{self, BufRead, Write},
+    time::{Duration, Instant},
+};
+use tokio::{
+    runtime::Builder,
+    sync::{mpsc, watch},
+    time::interval,
+};
 
 const STALE_AFTER: Duration = Duration::from_secs(2);
 
@@ -23,10 +31,30 @@ async fn async_main() -> io::Result<()> {
     let mut refresh = interval(Duration::from_millis(250));
 
     println!("RoadPilot Telemetry Reader — listening on \\\\.\\pipe\\RoadPilot.Telemetry.v1");
-    println!("Press Ctrl+C to stop.");
+    println!("Press Enter to print the newest frame as one JSON line. Press Ctrl+C to stop.");
+
+    // Enter presses arrive from a plain thread, so waiting for input never
+    // blocks the pipe server or the status line.
+    let (enter_tx, mut enter_rx) = mpsc::unbounded_channel::<()>();
+    std::thread::spawn(move || {
+        let stdin = io::stdin();
+        for line in stdin.lock().lines() {
+            if line.is_err() || enter_tx.send(()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut previous: Option<FrameId> = None;
 
     loop {
         tokio::select! {
+            Some(()) = enter_rx.recv() => {
+                let shot = snapshot(latest.borrow().as_ref(), Instant::now(), STALE_AFTER, previous);
+                if shot.frame.is_some() {
+                    previous = shot.frame;
+                }
+                println!("\r{:<110}\r{}", "", shot.line);
+            }
             signal = tokio::signal::ctrl_c() => {
                 signal?;
                 println!("\nStopping reader...");

@@ -6,7 +6,7 @@
 - `decode_frame`: envelope checks (protocol, schema version, session, safe integers) and field validation that removes non-finite or implausible values and reports them as `dropped_fields`;
 - `ordering::FrameOrder`: session + sequence ordering across reconnects;
 - `named_pipe::serve_latest`: the Windows pipe server, publishing the newest in-order frame with its monotonic receive time through a Tokio `watch` channel;
-- a console reader (`src/main.rs`) showing game, schema, speed, RPM, gear, fuel and position.
+- a console reader (`src/main.rs`) showing game, schema, speed, RPM, gear, fuel and position, and printing the newest frame as one copyable JSON line when Enter is pressed (`src/snapshot.rs`, see [`../docs/FRAME-SNAPSHOT.md`](../docs/FRAME-SNAPSHOT.md)).
 
 The pipe accepts one local client, rejects remote clients and requires the first pipe instance, so only one reader (RoadPilot or the console reader) can run at a time. See [`../docs/PROTOCOL-V2.md`](../docs/PROTOCOL-V2.md) for the wire format and [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for behaviour and tests.
 
