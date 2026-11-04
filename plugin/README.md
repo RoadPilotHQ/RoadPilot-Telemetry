@@ -1,16 +1,28 @@
 # Native telemetry plugin
 
-Windows SCS Telemetry SDK plugin for ETS2 and ATS. It registers speed, engine RPM, selected gear and lifecycle callbacks, then sends length-prefixed RoadPilot JSON frames to `\\.\pipe\RoadPilot.Telemetry.v1` from a dedicated worker thread.
+Windows SCS Telemetry SDK plugin for ETS2 and ATS. It registers the truck, input, motion, placement, navigation, game-time and cargo-damage channels plus the configuration (truck, job) and gameplay (job delivered/cancelled) events, and writes RoadPilot [schema 2](../docs/PROTOCOL-V2.md) frames to `\.\pipe\RoadPilot.Telemetry.v1` over one persistent connection from a worker thread. See [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for threading and failure handling.
 
-## Build
+## Files
 
-Use Visual Studio C++ tools and CMake. Point `SCS_SDK_ROOT` at an extracted SCS SDK directory; SDK headers are intentionally not vendored. For example:
+- `src/plugin.cpp` — SDK glue: registration, callbacks, transport worker.
+- `src/frame_v2.hpp`, `src/frame_v2.cpp` — data model and JSON serializer, no SDK dependency.
+- `tests/frame_v2_tests.cpp` — serializer tests against `../schemas/fixtures`.
+- `tests/plugin_host_tests.cpp` — loads the built DLL in a fake SCS host and talks to it over the real pipe.
+
+## Build and test
+
+Use Visual Studio C++ tools and CMake. Point `SCS_SDK_ROOT` at an extracted [SCS SDK 1.16](https://download.eurotrucksimulator2.com/scs_sdk_1_16.zip); SDK headers are intentionally not stored in this repository.
 
 ```powershell
-cmake -S plugin -B build/plugin -A x64 -DSCS_SDK_ROOT="C:/path/to/scs_sdk_1_16"
-cmake --build build/plugin --config Release
+cmake -S plugin -B plugin/build -A x64 -DSCS_SDK_ROOT="C:/path/to/scs_sdk_1_16"
+cmake --build plugin/build --config Release
+ctest --test-dir plugin/build -C Release --output-on-failure
 ```
 
-The DLL builds successfully and has passed a live smoke test in American Truck Simulator 1.62.1.1s with the console reader. Broader ETS2/ATS version validation remains. The build does not install the DLL or change game directories.
+`-DROADPILOT_BUILD_PLUGIN=OFF` builds and runs only the serializer tests (no SDK needed). Close RoadPilot and the console reader before running the host test; it uses the real pipe name.
 
-The build output is named `roadpilot-telemetry.dll`.
+The build output is `plugin/build/Release/roadpilot-telemetry.dll`. The build does not install the DLL or change game directories.
+
+## Verification status
+
+The schema 2 plugin passes the automated tests above. It has **not** been run in ETS2 or ATS yet. The earlier schema 1 plugin (speed, RPM, gear) was live-tested in ATS 1.62.x.

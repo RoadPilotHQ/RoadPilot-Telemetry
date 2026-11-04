@@ -59,27 +59,34 @@ fn render_status(latest: &mut watch::Receiver<Option<ReceivedTelemetryFrame>>) {
                 )
             } else {
                 let frame = &received.frame;
-                let speed = frame
-                    .values
+                let truck = frame.truck.unwrap_or_default();
+                let dash = || "—".to_owned();
+                let speed = truck
                     .speed_mps
                     .map(|v| format!("{v:.1} m/s ({:.0} km/h)", v * 3.6))
-                    .unwrap_or_else(|| "—".into());
-                let rpm = frame
-                    .values
+                    .unwrap_or_else(dash);
+                let rpm = truck
                     .engine_rpm
                     .map(|v| format!("{v:.0} rpm"))
-                    .unwrap_or_else(|| "—".into());
-                let gear = frame
-                    .values
-                    .gear
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "—".into());
+                    .unwrap_or_else(dash);
+                let gear = truck.gear.map(|v| v.to_string()).unwrap_or_else(dash);
+                let fuel = truck
+                    .fuel_l
+                    .map(|v| format!("{v:.0} l"))
+                    .unwrap_or_else(dash);
+                let position = frame
+                    .placement
+                    .map(|p| format!("x {:.0} z {:.0}", p.x, p.z))
+                    .unwrap_or_else(dash);
                 format!(
-                    "LIVE · {} · {} · {} · gear {} · seq {}",
+                    "LIVE · {} · v{} · {} · {} · gear {} · fuel {} · {} · seq {}",
                     game_label(received),
+                    frame.schema_version,
                     speed,
                     rpm,
                     gear,
+                    fuel,
+                    position,
                     frame.sequence
                 )
             }

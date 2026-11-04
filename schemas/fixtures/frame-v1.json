@@ -1,0 +1,8 @@
+{
+  "protocol": "roadpilot.telemetry",
+  "schemaVersion": 1,
+  "sequence": 5,
+  "game": "ats",
+  "pluginState": "running",
+  "values": { "speedMps": -2.5, "engineRpm": 800, "gear": -1 }
+}

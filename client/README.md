@@ -1,7 +1,15 @@
 # Desktop telemetry reader
 
-`roadpilot-telemetry-client` holds the first candidate JSON frame model, decoder, and Windows named-pipe server. It validates protocol ID, schema revision, sequence range, finite speed, and non-negative engine RPM. Desktop receive time remains separate from the serialized frame.
+`roadpilot-telemetry-client` is the Rust side of the RoadPilot telemetry protocol:
 
-The console reader hosts the local pipe and displays live ATS/ETS2 game, speed, RPM and gear values. The plugin-to-reader connection was smoke-tested in ATS 1.62.1.1s. The pipe grants read/write access to authenticated local users and rejects remote clients. RoadPilot UI integration and broader game-version validation remain open. Rust was chosen for this client crate so the RoadPilot Tauri shell can consume it later. See [`../docs/PROTOCOL-DRAFT.md`](../docs/PROTOCOL-DRAFT.md).
+- `TelemetryFrame` (schema 2 model, `src/v2.rs`) and the schema 1 upgrade (`src/v1.rs`);
+- `decode_frame`: envelope checks (protocol, schema version, session, safe integers) and field validation that removes non-finite or implausible values and reports them as `dropped_fields`;
+- `ordering::FrameOrder`: session + sequence ordering across reconnects;
+- `named_pipe::serve_latest`: the Windows pipe server, publishing the newest in-order frame with its monotonic receive time through a Tokio `watch` channel;
+- a console reader (`src/main.rs`) showing game, schema, speed, RPM, gear, fuel and position.
 
-The current dependency set is locked in `Cargo.lock`. Its crate metadata reports MIT/Apache-2.0, MIT, Unlicense, or Apache-2.0 with LLVM exception terms, with Unicode-3.0 included in the `unicode-ident` license expression. The project license is still undecided.
+The pipe accepts one local client, rejects remote clients and requires the first pipe instance, so only one reader (RoadPilot or the console reader) can run at a time. See [`../docs/PROTOCOL-V2.md`](../docs/PROTOCOL-V2.md) for the wire format and [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for behaviour and tests.
+
+RoadPilot consumes this crate as a git dependency pinned to a commit.
+
+The dependency set is locked in `Cargo.lock`. Its crate metadata reports MIT/Apache-2.0, MIT, Unlicense, or Apache-2.0 with LLVM exception terms, with Unicode-3.0 included in the `unicode-ident` license expression. The project license is still undecided.

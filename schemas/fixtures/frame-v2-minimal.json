@@ -1,0 +1,8 @@
+{
+  "protocol": "roadpilot.telemetry",
+  "schemaVersion": 2,
+  "session": 1,
+  "sequence": 7,
+  "game": "ats",
+  "pluginState": "paused"
+}

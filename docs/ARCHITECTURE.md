@@ -4,32 +4,62 @@
 
 ### Native game plugin (`plugin/`)
 
-The plugin is loaded by ETS2/ATS and negotiates a supported SCS telemetry API version. It adapts SCS callbacks into RoadPilot-owned telemetry values. It remains independent of the desktop UI and map-processing code.
+The plugin is loaded by ETS2/ATS through the official SCS Telemetry SDK. It negotiates telemetry API 1.00/1.01, accepts only the game ids of ETS2 and ATS, and registers events and channels during `scs_telemetry_init`.
 
-SCS documents repeated API initialization/shutdown cycles and single-threaded callbacks that are not thread-safe. The plugin must handle lifecycle transitions repeatedly and keep blocking work out of game callbacks. This last point is a design constraint inferred from the callback/threading model.
+Threading follows the SDK rules (all callbacks on the game's main thread, API not thread-safe):
+
+1. Channel, configuration and gameplay callbacks write only into a stage object owned by the game thread. No locking per channel.
+2. On every `FRAME_END` the stage is copied once into a shared snapshot under a mutex and the sequence number advances. Per-frame values are plain data (no allocation); strings from configuration events are copied only when they changed.
+3. A worker thread serializes the newest snapshot (schema 2 JSON) and writes it to the pipe. Pipe I/O never runs on the game thread, so a missing or slow reader cannot stall the game.
+
+Failure handling:
+
+- Only `FRAME_END`, `started` and `paused` are required. Missing channels, configuration or gameplay events (older game versions, ATS without AdBlue) leave the corresponding values absent; the number of missing channels is written to the game log once.
+- The worker keeps one persistent connection. Without a reader it retries every second; after a failed write it closes the handle and reconnects after 250 ms. Transport changes are written to the game log once per change.
+- On `scs_telemetry_shutdown` the worker is stopped (a blocked write is cancelled with `CancelSynchronousIo`) and all state is reset, so the SDK's repeated init/shutdown cycles are supported.
+- During pause the SDK sends no channel data but still sends frame events; the plugin keeps sending frames with `pluginState: "paused"` and the last values.
+
+The serializer (`frame_v2.{hpp,cpp}`) has no SDK dependency, uses `std::to_chars` (locale-independent) and omits non-finite numbers and empty sections.
 
 ### Desktop reader (`client/`)
 
-The Rust crate hosts a Windows named-pipe server, decodes length-prefixed JSON frames, and publishes the latest validated frame through a Tokio watch channel. Its console reader displays live values and marks data stale after two seconds without a frame. It rejects remote clients, enforces one server instance, and disconnects malformed or incomplete frames. RoadPilot UI integration remains unimplemented. The UI must not consume raw SCS structs or transport-specific layouts.
+The Rust crate hosts the named pipe (`named_pipe::serve_latest`), decodes and validates frames (`decode_frame`), and publishes only the newest in-order frame through a Tokio `watch` channel together with its monotonic receive time.
 
-The transport draft uses `\\.\pipe\RoadPilot.Telemetry.v1`: the desktop reader is the inbound server and the game plugin is the client. Each frame has a 4-byte little-endian length followed by JSON. The server grants authenticated local users read/write access and rejects remote clients; this supports game and reader processes with different Windows tokens while keeping the endpoint local. The server also requires the first pipe instance. These options are backed by [Tokio's Windows named-pipe API](https://docs.rs/tokio/latest/tokio/net/windows/named_pipe/struct.ServerOptions.html) and the [Microsoft named-pipe API](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea). The native plugin keeps writes off SCS callbacks because pipe writes may block when buffers fill; it uses a dedicated worker thread.
+- One pipe instance, local clients only (`reject_remote_clients`), first instance required, authenticated local users may write (the game may run with a different token).
+- A fresh pipe instance is created for each connection. With the first reader's approach of reusing a disconnected instance, the automated tests reproduced lost frames after a reconnect (the previous client's end-of-stream error was returned on the next client's first read).
+- Ordering across reconnects uses `session` + `sequence` (`ordering::FrameOrder`).
+- Validation rejects whole frames only for envelope errors and removes single invalid values otherwise (`TelemetryFrame::sanitize`).
 
-### Protocol (`schemas/`)
+### Protocol (`schemas/`, `docs/PROTOCOL-V2.md`)
 
-The protocol belongs to RoadPilot, not to SCS or another plugin. A draft JSON schema and byte-stream framing rule are in `schemas/` and `docs/PROTOCOL-DRAFT.md`; neither is approved as a stable external contract. The named pipe carries the normalized JSON model, not SCS memory layouts.
+The protocol belongs to RoadPilot, not to SCS or another plugin, and carries normalized JSON, never SDK memory layouts. The shared fixtures in `schemas/fixtures` are produced by the C++ serializer tests and decoded by the Rust tests, so the two implementations cannot drift apart unnoticed.
 
 ## Boundaries
 
-- Telemetry and map analysis remain independent. The map parser consumes installed game files; telemetry reports live game state.
-- No plugin installer, updater, or modification of game directories is part of the initial scaffold.
-- The desktop reader should report unavailable, stale, and disconnected data explicitly. Missing SDK channels must never be presented as real zeroes.
+- Telemetry and map analysis remain independent. RoadPilot-Map parses installed game files; telemetry reports live game state.
+- No plugin installer, updater, or modification of game directories.
+- No input injection or vehicle control.
 - Real ETS2/ATS compatibility can only be claimed after testing supported game versions with the matching plugin and reader.
+
+## Tests
+
+| Test | What it covers | Needs |
+|---|---|---|
+| `cargo test` (client) | Decoding, validation, schema 1 upgrade, ordering, real-pipe persistent connection, reconnect, malformed frames, second server | Windows |
+| `roadpilot_frame_tests` | Serializer output equals the shared fixtures; escaping; non-finite values; large integers; locale independence | C++ compiler |
+| `roadpilot_plugin_host_tests` | Built DLL in a fake SCS host: init/version checks, channels, config and gameplay events, persistent pipe, reconnect after reader restart, pause, delivered job, shutdown, re-init | SCS SDK headers; RoadPilot and the console reader closed |
+
+## Manual game test
+
+Automated tests cannot prove that the game delivers each value. For each game (ETS2 and ATS):
+
+1. Build the plugin, copy `roadpilot-telemetry.dll` into `bin/win_x64/plugins/`, close other telemetry readers.
+2. Start the console reader (`client`), then the game; confirm the SDK plugin dialog. Expect "connected to the desktop reader" in the game log and `LIVE … v2` in the reader.
+3. Load a truck and drive: speed, RPM, gear, fuel and position must change plausibly.
+4. Accept a job: check source, destination, cargo, income in RoadPilot.
+5. Pause (Esc) and resume; exit and restart the game with the reader open.
+6. Record per game which fields were confirmed, with the game version.
 
 ## SCS SDK baseline
 
-The [official SCS documentation](https://modding.scssoft.com/wiki/Documentation/Engine/SDK/Telemetry) lists Telemetry SDK 1.16 as stable and says its archive contains documentation and examples. The SDK's `telemetry_mem` sample describes shared memory as reducing output precision and adding latency. That example is not adopted as RoadPilot's wire format. See [the protocol draft](PROTOCOL-DRAFT.md).
-## Native plugin (Windows)
-
-The native plugin under `plugin/` registers the SCS common truck channels for speed, engine RPM and selected gear, along with started/paused/frame-end events. SCS callbacks only update a small in-memory snapshot; a dedicated worker connects to the desktop reader's named pipe and writes the framed JSON. SDK headers are supplied locally with `SCS_SDK_ROOT` at build time and are not stored in this repository.
-
-The plugin has not been exercised inside either game. Installation, reconnect behavior against a real desktop reader and ETS2/ATS compatibility remain to be validated.
+The [official SCS documentation](https://modding.scssoft.com/wiki/Documentation/Engine/SDK/Telemetry) lists Telemetry SDK 1.16 as stable. Channel names, units and coordinate conventions in this repository are taken from the 1.16 headers (`scssdk_telemetry_truck_common_channels.h`, `scssdk_telemetry_common_configs.h`, `scssdk_telemetry_common_gameplay_events.h`, `scssdk_value.h`). The SDK's `telemetry_mem` sample describes shared memory as reducing output precision and adding latency; it is not used.

@@ -1,25 +1,41 @@
-//! Transport-independent domain types for RoadPilot telemetry.
+//! RoadPilot telemetry protocol: frame model, decoding and validation.
 //!
-//! This crate does not read the SCS SDK or any IPC transport. Those adapters
-//! will be added after the protocol and transport decisions are approved.
+//! The wire format is described in `docs/PROTOCOL-V2.md`. Frames are JSON objects carrying
+//! `protocol` and `schemaVersion`. Schema 2 is current; schema 1 frames (sent by older
+//! plugins) are still accepted and upgraded to the same [`TelemetryFrame`] model with all
+//! fields that v1 cannot carry left absent.
+//!
+//! This crate does not talk to the SCS SDK. The Windows transport is in [`named_pipe`].
 
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
 #[cfg(windows)]
 pub mod named_pipe;
+pub mod ordering;
+pub mod v1;
+pub mod v2;
 
-/// Protocol identifier used by JSON frames.
+pub use v2::{
+    Inputs, Job, JobState, Motion, Navigation, Placement, TelemetryFrame, TruckConfig, TruckState,
+    Vec3,
+};
+
+/// Protocol identifier carried by every frame.
 pub const PROTOCOL_ID: &str = "roadpilot.telemetry";
 
-/// Current candidate frame revision.
-pub const FRAME_SCHEMA_VERSION: u16 = 1;
+/// Schema written by the current plugin.
+pub const CURRENT_SCHEMA_VERSION: u16 = 2;
+
+/// Schemas this reader accepts. Unknown versions fail closed.
+pub const SUPPORTED_SCHEMA_VERSIONS: [u16; 2] = [1, 2];
 
 /// Maximum accepted serialized frame size.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
-/// Maximum JSON integer that is represented exactly by JavaScript consumers.
-pub const MAX_SAFE_SEQUENCE: u64 = 9_007_199_254_740_991;
+/// Largest integer represented exactly by JavaScript consumers (2^53 - 1). Session ids,
+/// sequence numbers and timestamps must not exceed it.
+pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -35,69 +51,17 @@ pub enum PluginState {
     Paused,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TelemetryValues {
-    /// SCS truck speed in meters per second. Negative values indicate reverse.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub speed_mps: Option<f32>,
-    /// SCS engine RPM. Missing means unavailable, not zero.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub engine_rpm: Option<f32>,
-    /// Selected engine gear: positive forward, zero neutral, negative reverse.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gear: Option<i32>,
-}
-
-impl TelemetryValues {
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        if self.speed_mps.is_some_and(|value| !value.is_finite()) {
-            return Err(ValidationError::NonFiniteSpeed);
-        }
-        if self
-            .engine_rpm
-            .is_some_and(|value| !value.is_finite() || value < 0.0)
-        {
-            return Err(ValidationError::InvalidEngineRpm);
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TelemetryFrameV1 {
-    pub protocol: String,
-    pub schema_version: u16,
-    /// Monotonically increasing within one plugin session.
-    pub sequence: u64,
-    pub game: GameId,
-    pub plugin_state: PluginState,
-    pub values: TelemetryValues,
-}
-
+/// Errors that reject a whole frame. Invalid individual values do not reject the frame;
+/// they are removed and reported in [`DecodedFrame::dropped_fields`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValidationError {
     WrongProtocol,
-    UnsupportedSchemaVersion,
+    UnsupportedSchemaVersion(u64),
+    SessionExceedsSafeInteger,
     SequenceExceedsSafeInteger,
-    NonFiniteSpeed,
-    InvalidEngineRpm,
-}
-
-impl TelemetryFrameV1 {
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        if self.protocol != PROTOCOL_ID {
-            return Err(ValidationError::WrongProtocol);
-        }
-        if self.schema_version != FRAME_SCHEMA_VERSION {
-            return Err(ValidationError::UnsupportedSchemaVersion);
-        }
-        if self.sequence > MAX_SAFE_SEQUENCE {
-            return Err(ValidationError::SequenceExceedsSafeInteger);
-        }
-        self.values.validate()
-    }
+    TimestampExceedsSafeInteger,
+    /// A schema 2 frame without its mandatory session id.
+    MissingSession,
 }
 
 #[derive(Debug)]
@@ -107,32 +71,61 @@ pub enum DecodeError {
     InvalidFrame(ValidationError),
 }
 
-/// Decode and validate a JSON frame. Unknown fields are tolerated so additive
-/// optional fields can be introduced without breaking older readers.
-pub fn decode_frame(bytes: &[u8]) -> Result<TelemetryFrameV1, DecodeError> {
+/// A validated frame plus the names of values that were removed as invalid.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedFrame {
+    pub frame: TelemetryFrame,
+    /// Wire paths such as `truck.engineRpm`, for diagnostics.
+    pub dropped_fields: Vec<&'static str>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Envelope {
+    protocol: String,
+    schema_version: u64,
+}
+
+/// Decode and validate a JSON frame of any supported schema.
+///
+/// Unknown fields are ignored so that additive optional fields can be introduced without
+/// breaking older readers.
+pub fn decode_frame(bytes: &[u8]) -> Result<DecodedFrame, DecodeError> {
     if bytes.len() > MAX_FRAME_BYTES {
         return Err(DecodeError::FrameTooLarge);
     }
-
-    let frame: TelemetryFrameV1 =
-        serde_json::from_slice(bytes).map_err(DecodeError::InvalidJson)?;
-    frame.validate().map_err(DecodeError::InvalidFrame)?;
-    Ok(frame)
+    let envelope: Envelope = serde_json::from_slice(bytes).map_err(DecodeError::InvalidJson)?;
+    if envelope.protocol != PROTOCOL_ID {
+        return Err(DecodeError::InvalidFrame(ValidationError::WrongProtocol));
+    }
+    let mut frame = match envelope.schema_version {
+        1 => serde_json::from_slice::<v1::TelemetryFrameV1>(bytes)
+            .map_err(DecodeError::InvalidJson)?
+            .upgrade(),
+        2 => serde_json::from_slice::<TelemetryFrame>(bytes).map_err(DecodeError::InvalidJson)?,
+        other => {
+            return Err(DecodeError::InvalidFrame(
+                ValidationError::UnsupportedSchemaVersion(other),
+            ));
+        }
+    };
+    frame
+        .validate_envelope()
+        .map_err(DecodeError::InvalidFrame)?;
+    let dropped_fields = frame.sanitize();
+    Ok(DecodedFrame {
+        frame,
+        dropped_fields,
+    })
 }
 
 /// A validated frame paired with the desktop reader's monotonic receive time.
-/// The receive time is local metadata and must not be serialized onto the wire.
+/// The receive time is local metadata and is never serialized onto the wire.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReceivedTelemetryFrame {
-    pub frame: TelemetryFrameV1,
+    pub frame: TelemetryFrame,
+    pub dropped_fields: Vec<&'static str>,
     pub received_at: Instant,
-}
-
-impl ReceivedTelemetryFrame {
-    pub fn new(frame: TelemetryFrameV1, received_at: Instant) -> Result<Self, ValidationError> {
-        frame.validate()?;
-        Ok(Self { frame, received_at })
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,4 +138,133 @@ pub enum ConnectionState {
     Stale,
     Disconnected,
     Error,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FULL: &str = include_str!("../../schemas/fixtures/frame-v2-full.json");
+    const MINIMAL: &str = include_str!("../../schemas/fixtures/frame-v2-minimal.json");
+    const V1: &str = include_str!("../../schemas/fixtures/frame-v1.json");
+
+    #[test]
+    fn decodes_the_shared_full_fixture() {
+        let decoded = decode_frame(FULL.as_bytes()).unwrap();
+        assert!(
+            decoded.dropped_fields.is_empty(),
+            "{:?}",
+            decoded.dropped_fields
+        );
+        let f = decoded.frame;
+        assert_eq!(f.schema_version, 2);
+        assert_eq!(f.session, Some(4_242_424_242));
+        assert_eq!(f.sequence, 1234);
+        assert_eq!(f.game, GameId::Ets2);
+        assert_eq!(f.game_version.as_deref(), Some("1.21"));
+        assert_eq!(f.plugin_state, PluginState::Running);
+        assert_eq!(f.simulation_time_us, Some(98_765_432));
+        assert_eq!(f.game_time_min, Some(2_000));
+        let truck = f.truck.unwrap();
+        assert_eq!(truck.speed_mps, Some(22.5));
+        assert_eq!(truck.gear, Some(11));
+        assert_eq!(truck.engine_enabled, Some(true));
+        assert_eq!(truck.cruise_control_mps, Some(22.222));
+        assert_eq!(truck.retarder_level, Some(1));
+        let placement = f.placement.unwrap();
+        assert_eq!(placement.x, -31_234.567_8);
+        assert_eq!(placement.heading, 0.25);
+        let job = f.job.unwrap();
+        assert_eq!(job.state, JobState::Active);
+        assert_eq!(job.source_city.as_deref(), Some("Hamburg"));
+        assert_eq!(job.destination_city.as_deref(), Some("Praha \"Hlavní\""));
+        assert_eq!(job.income, Some(24_360));
+        let config = f.truck_config.unwrap();
+        assert_eq!(config.fuel_capacity_l, Some(800.0));
+        assert_eq!(f.navigation.unwrap().speed_limit_mps, Some(22.222));
+        assert_eq!(f.motion.unwrap().wheel_steering_rot, Some(-0.03));
+        assert_eq!(f.inputs.unwrap().steering_input, Some(-0.125));
+    }
+
+    #[test]
+    fn decodes_the_minimal_fixture_with_everything_absent() {
+        let f = decode_frame(MINIMAL.as_bytes()).unwrap().frame;
+        assert_eq!(f.session, Some(1));
+        assert!(f.truck.is_none() && f.placement.is_none() && f.job.is_none());
+        assert_eq!(f.plugin_state, PluginState::Paused);
+    }
+
+    #[test]
+    fn upgrades_v1_frames_without_inventing_fields() {
+        let f = decode_frame(V1.as_bytes()).unwrap().frame;
+        assert_eq!(f.schema_version, 1);
+        assert_eq!(f.session, None);
+        assert_eq!(f.game, GameId::Ats);
+        let truck = f.truck.unwrap();
+        assert_eq!(truck.speed_mps, Some(-2.5));
+        assert_eq!(truck.engine_rpm, Some(800.0));
+        assert_eq!(truck.gear, Some(-1));
+        assert_eq!(truck.fuel_l, None);
+        assert!(f.placement.is_none() && f.job.is_none() && f.truck_config.is_none());
+    }
+
+    #[test]
+    fn rejects_unknown_versions_and_wrong_protocol() {
+        let v3 = MINIMAL.replace("\"schemaVersion\": 2", "\"schemaVersion\": 3");
+        assert!(matches!(
+            decode_frame(v3.as_bytes()),
+            Err(DecodeError::InvalidFrame(
+                ValidationError::UnsupportedSchemaVersion(3)
+            ))
+        ));
+        let other = MINIMAL.replace("roadpilot.telemetry", "something.else");
+        assert!(matches!(
+            decode_frame(other.as_bytes()),
+            Err(DecodeError::InvalidFrame(ValidationError::WrongProtocol))
+        ));
+    }
+
+    #[test]
+    fn rejects_v2_frames_without_session_or_with_unsafe_integers() {
+        let no_session = MINIMAL.replace("\"session\": 1,", "");
+        assert!(matches!(
+            decode_frame(no_session.as_bytes()),
+            Err(DecodeError::InvalidFrame(ValidationError::MissingSession))
+        ));
+        let big = MINIMAL.replace("\"sequence\": 7", "\"sequence\": 9007199254740992");
+        assert!(matches!(
+            decode_frame(big.as_bytes()),
+            Err(DecodeError::InvalidFrame(
+                ValidationError::SequenceExceedsSafeInteger
+            ))
+        ));
+    }
+
+    #[test]
+    fn tolerates_unknown_fields() {
+        let extended = MINIMAL.replace(
+            "\"pluginState\"",
+            "\"futureField\": {\"a\": 1}, \"pluginState\"",
+        );
+        assert!(decode_frame(extended.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn rejects_oversized_and_malformed_frames() {
+        let big = vec![b' '; MAX_FRAME_BYTES + 1];
+        assert!(matches!(
+            decode_frame(&big),
+            Err(DecodeError::FrameTooLarge)
+        ));
+        assert!(matches!(
+            decode_frame(b"{not json"),
+            Err(DecodeError::InvalidJson(_))
+        ));
+        // A wrong type for a known field is a malformed frame, not a dropped value.
+        let wrong_type = MINIMAL.replace("\"sequence\": 7", "\"sequence\": \"7\"");
+        assert!(matches!(
+            decode_frame(wrong_type.as_bytes()),
+            Err(DecodeError::InvalidJson(_))
+        ));
+    }
 }

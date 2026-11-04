@@ -1,29 +1,65 @@
 # RoadPilot-Telemetry
 
-RoadPilot-Telemetry will be the standalone telemetry component for the RoadPilot ecosystem. It will contain two independent parts:
+RoadPilot-Telemetry is the standalone telemetry component of the RoadPilot ecosystem. It contains two independent parts:
 
-- a native ETS2/ATS game plugin that reads channels through the SCS telemetry API;
-- a desktop-side reader that receives and validates RoadPilot telemetry frames.
+- a native ETS2/ATS game plugin that reads channels through the official SCS Telemetry SDK;
+- a desktop-side Rust reader that receives, validates and orders RoadPilot telemetry frames.
+
+The telemetry is **read-only**: nothing in this repository sends input to the game.
 
 ## Status
 
-Implementation draft. The desktop client contains a Rust decoder, Windows named-pipe server and a small console reader. The native plugin registers core SCS telemetry channels and publishes draft frames from a worker thread. Both components build successfully and have passed a live smoke test in American Truck Simulator 1.62.1.1s. The plugin was manually placed in the ATS plugin folder for that test; the project does not install or update game files automatically.
+| Area | Implemented | Verified |
+|---|---|---|
+| Protocol schema 2 (truck, inputs, motion, placement, truck config, job, navigation, game time) | Yes, see [PROTOCOL-V2.md](docs/PROTOCOL-V2.md) | Automated tests only |
+| Persistent pipe connection with reconnect | Yes | Automated tests (real pipe, fake SCS host) |
+| Schema 1 compatibility in the reader | Yes | Automated tests |
+| Plugin in a running game | — | **Schema 1 plugin:** live-tested in ATS 1.62.x (speed, RPM, gear). **Schema 2 plugin: not yet tested in ETS2 or ATS.** |
 
-The official [SCS Telemetry SDK documentation](https://modding.scssoft.com/wiki/Documentation/Engine/SDK/Telemetry) lists SDK 1.16 as stable as of 3 November 2026. This is an investigation baseline, not a confirmed game-version support promise. See [the architecture notes](docs/ARCHITECTURE.md) and [protocol draft](docs/PROTOCOL-DRAFT.md).
+The schema 2 plugin and reader pass automated tests without a game: the serializer produces the shared fixture frames byte for byte, the reader decodes and validates them, and a fake SCS host loads the built DLL and exchanges frames with it over the real pipe, including reconnects, pause, job events and re-initialization. No field of schema 2 has been checked against a running game yet; see [the manual test](docs/ARCHITECTURE.md#manual-game-test).
 
 ## Layout
 
-- `plugin/` — native in-game SCS plugin.
-- `client/` — desktop-side transport reader and normalized telemetry API.
-- `schemas/` — versioned wire schemas after the protocol is approved.
-- `docs/` — architecture, protocol decisions, SDK and lifecycle notes.
+- `plugin/` — native in-game SCS plugin (C++17, CMake), its serializer and tests.
+- `client/` — Rust crate `roadpilot-telemetry-client`: frame model, decoding, validation, ordering, named-pipe server and a console reader.
+- `schemas/` — JSON Schema files and the shared test fixtures.
+- `docs/` — [architecture](docs/ARCHITECTURE.md), [protocol schema 2](docs/PROTOCOL-V2.md), [schema 1 draft](docs/PROTOCOL-DRAFT.md).
 
-Build the Windows console reader with `cargo build --release --manifest-path client/Cargo.toml`. Direct and transitive crate metadata lists MIT/Apache-2.0, MIT, Unlicense, or Apache-2.0 with LLVM exception terms; the project license remains undecided.
+## Build and test
 
-## Decisions still open
+Rust client (any Windows machine with Rust):
 
-- supported ETS2/ATS game-version range and installation approach;
-- frame-rate, freshness threshold, and exact channel set/availability semantics;
-- project license and distribution terms.
+```powershell
+cargo fmt --manifest-path client/Cargo.toml --check
+cargo clippy --manifest-path client/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path client/Cargo.toml
+cargo build --release --manifest-path client/Cargo.toml   # console reader
+```
 
-Do not copy or redistribute SDK files or build artifacts until the applicable notices and project distribution requirements have been reviewed. The SCS SDK archive includes its own license notice.
+Plugin and C++ tests (Visual Studio C++ tools, CMake, an extracted [SCS SDK](https://download.eurotrucksimulator2.com/scs_sdk_1_16.zip)):
+
+```powershell
+cmake -S plugin -B plugin/build -A x64 -DSCS_SDK_ROOT="C:/path/to/scs_sdk_1_16"
+cmake --build plugin/build --config Release
+ctest --test-dir plugin/build -C Release --output-on-failure
+```
+
+The serializer tests alone need no SDK: configure with `-DROADPILOT_BUILD_PLUGIN=OFF`. The plugin host test uses the real pipe name, so RoadPilot and the console reader must be closed while it runs.
+
+## Installation
+
+Copy `plugin/build/Release/roadpilot-telemetry.dll` into the game's `bin/win_x64/plugins/` folder (create it if needed), separately for ETS2 and ATS. Nothing in this repository installs or modifies game files. The game asks once to confirm the use of SDK plugins.
+
+## Compatibility
+
+- One plugin binary serves ETS2 and ATS; it reports the game and the SDK telemetry game version in every frame.
+- The plugin accepts SDK telemetry API 1.00 and 1.01. Channels a game does not provide (for example AdBlue in ATS) are simply absent.
+- The reader accepts schema 1 frames from the first plugin and schema 2 frames.
+
+## Licensing
+
+- Project licence: undecided.
+- SCS SDK: © SCS Software, MIT-style licence included in the SDK archive (`sdk_license.txt`). The SDK is not stored in this repository; the plugin is built against a locally extracted copy.
+- Rust dependencies report MIT, Apache-2.0, Unlicense or Apache-2.0 with LLVM exception terms (see `client/README.md`).
+
+Review distribution terms before publishing built binaries.

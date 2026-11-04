@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/RoadPilotHQ/RoadPilot-Telemetry/blob/main/schemas/telemetry-frame-v2.schema.json",
+  "title": "RoadPilot telemetry frame, schema 2",
+  "description": "See docs/PROTOCOL-V2.md for units, bounds and coordinate conventions. Absent fields mean 'not provided', never zero.",
+  "type": "object",
+  "required": ["protocol", "schemaVersion", "session", "sequence", "game", "pluginState"],
+  "$defs": {
+    "safeInteger": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "vec3": {
+      "type": "object",
+      "required": ["x", "y", "z"],
+      "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "z": { "type": "number" } }
+    }
+  },
+  "properties": {
+    "protocol": { "const": "roadpilot.telemetry" },
+    "schemaVersion": { "const": 2 },
+    "session": { "$ref": "#/$defs/safeInteger" },
+    "sequence": { "$ref": "#/$defs/safeInteger" },
+    "game": { "enum": ["ets2", "ats"] },
+    "gameVersion": { "type": "string", "maxLength": 32 },
+    "pluginState": { "enum": ["running", "paused"] },
+    "simulationTimeUs": { "$ref": "#/$defs/safeInteger" },
+    "gameTimeMin": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "localScale": { "type": "number", "minimum": 0 },
+    "truck": {
+      "type": "object",
+      "properties": {
+        "speedMps": { "type": "number" },
+        "engineRpm": { "type": "number", "minimum": 0 },
+        "gear": { "type": "integer" },
+        "displayedGear": { "type": "integer" },
+        "engineEnabled": { "type": "boolean" },
+        "electricEnabled": { "type": "boolean" },
+        "fuelL": { "type": "number", "minimum": 0 },
+        "fuelRangeKm": { "type": "number", "minimum": 0 },
+        "fuelConsumptionLPerKm": { "type": "number", "minimum": 0 },
+        "fuelWarning": { "type": "boolean" },
+        "adblueL": { "type": "number", "minimum": 0 },
+        "oilTemperatureC": { "type": "number" },
+        "waterTemperatureC": { "type": "number" },
+        "oilPressurePsi": { "type": "number", "minimum": 0 },
+        "batteryVoltageV": { "type": "number", "minimum": 0 },
+        "brakeAirPressurePsi": { "type": "number", "minimum": 0 },
+        "brakeTemperatureC": { "type": "number" },
+        "parkingBrake": { "type": "boolean" },
+        "motorBrake": { "type": "boolean" },
+        "retarderLevel": { "type": "integer", "minimum": 0 },
+        "cruiseControlMps": { "type": "number", "minimum": 0, "description": "0 means cruise control is off." },
+        "odometerKm": { "type": "number", "minimum": 0 }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "steeringInput": { "type": "number", "minimum": -1, "maximum": 1, "description": "Counterclockwise: positive = left." },
+        "throttleInput": { "type": "number", "minimum": 0, "maximum": 1 },
+        "brakeInput": { "type": "number", "minimum": 0, "maximum": 1 },
+        "clutchInput": { "type": "number", "minimum": 0, "maximum": 1 },
+        "steeringEffective": { "type": "number", "minimum": -1, "maximum": 1 },
+        "throttleEffective": { "type": "number", "minimum": 0, "maximum": 1 },
+        "brakeEffective": { "type": "number", "minimum": 0, "maximum": 1 },
+        "clutchEffective": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "motion": {
+      "type": "object",
+      "properties": {
+        "localVelocityMps": { "$ref": "#/$defs/vec3" },
+        "localAccelerationMps2": { "$ref": "#/$defs/vec3" },
+        "localAngularVelocityRps": { "$ref": "#/$defs/vec3" },
+        "wheelSteeringRot": { "type": "number", "minimum": -0.25, "maximum": 0.25 }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "required": ["x", "y", "z", "heading", "pitch", "roll"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" },
+        "heading": { "type": "number", "minimum": 0, "maximum": 1 },
+        "pitch": { "type": "number", "minimum": -0.25, "maximum": 0.25 },
+        "roll": { "type": "number", "minimum": -0.5, "maximum": 0.5 }
+      }
+    },
+    "truckConfig": {
+      "type": "object",
+      "properties": {
+        "brand": { "type": "string", "maxLength": 256 },
+        "name": { "type": "string", "maxLength": 256 },
+        "fuelCapacityL": { "type": "number", "minimum": 0 },
+        "adblueCapacityL": { "type": "number", "minimum": 0 },
+        "rpmLimit": { "type": "number", "minimum": 0 },
+        "forwardGears": { "type": "integer", "minimum": 0 },
+        "reverseGears": { "type": "integer", "minimum": 0 },
+        "retarderSteps": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "job": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": { "enum": ["none", "active", "delivered", "cancelled"] },
+        "cargo": { "type": "string", "maxLength": 256 },
+        "cargoMassKg": { "type": "number", "minimum": 0 },
+        "cargoDamage": { "type": "number", "minimum": 0, "maximum": 1 },
+        "cargoLoaded": { "type": "boolean" },
+        "sourceCity": { "type": "string", "maxLength": 256 },
+        "sourceCompany": { "type": "string", "maxLength": 256 },
+        "destinationCity": { "type": "string", "maxLength": 256 },
+        "destinationCompany": { "type": "string", "maxLength": 256 },
+        "income": { "$ref": "#/$defs/safeInteger" },
+        "deliveryTimeMin": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "plannedDistanceKm": { "type": "integer", "minimum": 0 },
+        "jobMarket": { "type": "string", "maxLength": 256 },
+        "deliveredRevenue": { "type": "integer" },
+        "cancelPenalty": { "type": "integer" }
+      }
+    },
+    "navigation": {
+      "type": "object",
+      "properties": {
+        "distanceM": { "type": "number", "minimum": 0 },
+        "timeS": { "type": "number", "minimum": 0 },
+        "speedLimitMps": { "type": "number", "minimum": 0, "description": "The SDK does not document the meaning of 0; passed through unchanged." }
+      }
+    }
+  }
+}

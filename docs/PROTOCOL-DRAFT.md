@@ -1,6 +1,8 @@
-# RoadPilot telemetry protocol — draft
+# RoadPilot telemetry protocol — schema 1 (superseded)
 
-This document records a candidate JSON frame contract. It is still **draft** and must be reviewed before treating v1 as a stable wire format. The desktop reader currently decodes this candidate; the plugin does not emit it yet.
+> **Superseded by [schema 2](PROTOCOL-V2.md).** The current plugin writes schema 2 over a persistent connection. The reader still accepts schema 1 frames from the first plugin release and upgrades them (speed, RPM and gear only). This document is kept as the record of schema 1.
+
+This document records the first candidate JSON frame contract.
 
 ## Stream framing draft
 
