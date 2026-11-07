@@ -197,6 +197,33 @@ pub struct TruckConfig {
     pub reverse_gears: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retarder_steps: Option<u32>,
+    /// Wheel count reported by the game; may exceed `wheels.len()` (see `MAX_WHEELS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wheel_count: Option<u32>,
+    /// Trailer hook position in raw SDK vehicle space (X right, Y up, Z backwards), metres.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_position_m: Option<Vec3>,
+    /// Wheel geometry by SDK wheel index. Absent when the game sent no wheel count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wheels: Option<Vec<WheelConfig>>,
+}
+
+/// Most wheels per truck carried by the protocol.
+pub const MAX_WHEELS: usize = 14;
+
+/// Static geometry of one wheel, raw SDK vehicle space.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WheelConfig {
+    /// Wheel centre in vehicle space (X right, Y up, Z backwards), metres.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_m: Option<Vec3>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius_m: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steerable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub powered: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -437,6 +464,16 @@ impl TelemetryFrame {
             d.u32(&mut c.forward_gears, 64, "truckConfig.forwardGears");
             d.u32(&mut c.reverse_gears, 32, "truckConfig.reverseGears");
             d.u32(&mut c.retarder_steps, 64, "truckConfig.retarderSteps");
+            d.u32(&mut c.wheel_count, 4_096, "truckConfig.wheelCount");
+            d.vec3(&mut c.hook_position_m, 50.0, "truckConfig.hookPositionM");
+            if c.wheels.as_ref().is_some_and(|w| w.len() > MAX_WHEELS) {
+                c.wheels = None;
+                d.0.push("truckConfig.wheels");
+            }
+            for wheel in c.wheels.iter_mut().flatten() {
+                d.vec3(&mut wheel.position_m, 50.0, "truckConfig.wheels.positionM");
+                d.f32(&mut wheel.radius_m, 0.05, 3.0, "truckConfig.wheels.radiusM");
+            }
         }
         if let Some(j) = &mut self.job {
             d.string(&mut j.cargo, "job.cargo");
@@ -682,6 +719,45 @@ mod tests {
             ..Navigation::default()
         });
         assert!(f.sanitize().is_empty());
+    }
+
+    #[test]
+    fn drops_invalid_wheel_values_individually_and_oversized_wheel_lists() {
+        let mut f = frame();
+        let wheel = |x: f32, r: f32| WheelConfig {
+            position_m: Some(Vec3 { x, y: 0.5, z: 1.0 }),
+            radius_m: Some(r),
+            steerable: Some(false),
+            powered: Some(true),
+        };
+        f.truck_config = Some(TruckConfig {
+            wheel_count: Some(2),
+            hook_position_m: Some(Vec3 {
+                x: f32::NAN,
+                y: 0.0,
+                z: 0.0,
+            }),
+            wheels: Some(vec![wheel(f32::INFINITY, 0.5), wheel(0.9, 0.0)]),
+            ..TruckConfig::default()
+        });
+        let dropped = f.sanitize();
+        let c = f.truck_config.as_ref().unwrap();
+        assert!(c.hook_position_m.is_none());
+        let wheels = c.wheels.as_ref().unwrap();
+        assert!(wheels[0].position_m.is_none() && wheels[0].radius_m == Some(0.5));
+        assert!(wheels[1].radius_m.is_none() && wheels[1].position_m.is_some());
+        assert_eq!(wheels[1].powered, Some(true));
+        assert!(dropped.contains(&"truckConfig.hookPositionM"));
+        assert!(dropped.contains(&"truckConfig.wheels.positionM"));
+        assert!(dropped.contains(&"truckConfig.wheels.radiusM"));
+
+        let mut f = frame();
+        f.truck_config = Some(TruckConfig {
+            wheels: Some(vec![WheelConfig::default(); MAX_WHEELS + 1]),
+            ..TruckConfig::default()
+        });
+        assert!(f.sanitize().contains(&"truckConfig.wheels"));
+        assert!(f.truck_config.unwrap().wheels.is_none());
     }
 
     #[test]

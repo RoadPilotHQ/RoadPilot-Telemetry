@@ -18,8 +18,8 @@ pub mod v1;
 pub mod v2;
 
 pub use v2::{
-    Inputs, Job, JobState, Motion, Navigation, Placement, TelemetryFrame, TruckConfig, TruckState,
-    Vec3,
+    Inputs, Job, JobState, MAX_WHEELS, Motion, Navigation, Placement, TelemetryFrame, TruckConfig,
+    TruckState, Vec3, WheelConfig,
 };
 
 /// Protocol identifier carried by every frame.
@@ -182,6 +182,19 @@ mod tests {
         assert_eq!(job.income, Some(24_360));
         let config = f.truck_config.unwrap();
         assert_eq!(config.fuel_capacity_l, Some(800.0));
+        assert_eq!(config.wheel_count, Some(4));
+        let hook = config.hook_position_m.unwrap();
+        assert_eq!((hook.x, hook.y, hook.z), (0.0, 1.0, 1.25));
+        let wheels = config.wheels.unwrap();
+        assert_eq!(wheels.len(), 4);
+        let front_left = wheels[0];
+        let pos = front_left.position_m.unwrap();
+        assert_eq!((pos.x, pos.y, pos.z), (-0.875, 0.5, -1.75));
+        assert_eq!(front_left.radius_m, Some(0.5));
+        assert_eq!(front_left.steerable, Some(true));
+        assert_eq!(front_left.powered, Some(false));
+        assert_eq!(wheels[3].steerable, Some(false));
+        assert_eq!(wheels[3].powered, Some(true));
         assert_eq!(f.navigation.unwrap().speed_limit_mps, Some(22.222));
         assert_eq!(f.motion.unwrap().wheel_steering_rot, Some(-0.03));
         assert_eq!(f.inputs.unwrap().steering_input, Some(-0.125));

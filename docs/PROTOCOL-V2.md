@@ -130,6 +130,20 @@ From `truck.world.placement`. The object is present only with all six values; on
 
 From the SDK `truck` configuration event: `brand`, `name` (strings), `fuelCapacityL`, `adblueCapacityL`, `rpmLimit` (numbers), `forwardGears`, `reverseGears`, `retarderSteps` (integers). An empty configuration (truck removed) clears all values.
 
+Wheel geometry (additive, optional, raw SDK vehicle space: X right, Y up, **Z backwards**, metres; the plugin does no conversion):
+
+| Field | Type / unit | Bounds | SDK configuration attribute |
+|---|---|---|---|
+| `wheelCount` | integer | 0…4096 | `wheels.count` |
+| `hookPositionM` | {x,y,z} m | each ±50 | `hook.position` (trailer hook) |
+| `wheels[]` | array indexed by SDK wheel index, at most 14 entries | | |
+| `wheels[].positionM` | {x,y,z} m, wheel centre | each ±50 | `wheel.position` |
+| `wheels[].radiusM` | m | 0.05…3 | `wheel.radius` |
+| `wheels[].steerable` | bool | | `wheel.steerable` |
+| `wheels[].powered` | bool | | `wheel.powered` |
+
+`wheels` is sent only when the game provided `wheelCount`; its length is `min(wheelCount, 14)`. Entries beyond 14 are not reported, so `wheelCount` can be larger than `wheels.length`. An individual wheel field the game did not provide is absent (never zero). A list with more than 14 entries is removed as a whole; invalid single values are removed individually. Derived quantities such as the wheelbase are not part of the protocol; consumers calculate them.
+
 ### `job`
 
 | Field | Type / unit | Source |

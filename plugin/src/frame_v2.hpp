@@ -5,6 +5,8 @@
 // schemas/fixtures; the Rust client decodes the same fixtures.
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -60,10 +62,26 @@ struct Motion {
     Opt<float> wheel_steering_rot;
 };
 
+// Most wheels the plugin reports per truck (SDK indices >= this are ignored).
+constexpr std::size_t kMaxWheelsReported = 14;
+
+// Static wheel geometry from the truck configuration. Positions are raw SDK vehicle space
+// (X right, Y up, Z backwards), in metres; no conversion is done here.
+struct WheelConfig {
+    Opt<Vec3f> position_m;
+    Opt<float> radius_m;
+    Opt<bool> steerable, powered;
+};
+
 struct TruckConfig {
     Opt<std::string> brand, name;
     Opt<float> fuel_capacity_l, adblue_capacity_l, rpm_limit;
     Opt<std::uint32_t> forward_gears, reverse_gears, retarder_steps;
+    // Number of wheels reported by the game (may exceed kMaxWheelsReported) and the
+    // trailer hook position in vehicle space.
+    Opt<std::uint32_t> wheel_count;
+    Opt<Vec3f> hook_position_m;
+    std::array<WheelConfig, kMaxWheelsReported> wheels;
 };
 
 // `unknown` until the game delivered its first job configuration; not serialized.

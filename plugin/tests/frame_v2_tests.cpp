@@ -129,6 +129,16 @@ void full_frame_matches_shared_fixture() {
     s.truck_config.forward_gears.set(12);
     s.truck_config.reverse_gears.set(2);
     s.truck_config.retarder_steps.set(3);
+    s.truck_config.wheel_count.set(4);
+    s.truck_config.hook_position_m.set(Vec3f{0.0f, 1.0f, 1.25f});
+    for (std::size_t w = 0; w < 4; ++w) {
+        WheelConfig& wheel = s.truck_config.wheels[w];
+        const bool front = w < 2;
+        wheel.position_m.set(Vec3f{(w % 2 == 0) ? -0.875f : 0.875f, 0.5f, front ? -1.75f : 1.25f});
+        wheel.radius_m.set(0.5f);
+        wheel.steerable.set(front);
+        wheel.powered.set(!front);
+    }
     Job& j = s.job;
     j.state = JobState::active;
     j.cargo.set("Electronics");

@@ -37,6 +37,7 @@ namespace {
 constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\RoadPilot.Telemetry.v1";
 // SDK 1.11+: up to 14 wheels expose indexed channels.
 constexpr scs_u32_t kMaxWheels = 14;
+static_assert(kMaxWheels == kMaxWheelsReported, "wheel limits must match the frame model");
 // At most ~60 frames per second are written; newer frames replace unsent ones.
 constexpr auto kMinSendInterval = std::chrono::milliseconds(16);
 constexpr auto kReconnectDelay = std::chrono::milliseconds(1000);
@@ -304,6 +305,11 @@ void set_u64(Opt<std::uint64_t>& target, const scs_value_t& value) {
 void set_s64(Opt<std::int64_t>& target, const scs_value_t& value) {
     if (value.type == SCS_VALUE_TYPE_s64) target.set(value.value_s64.value);
 }
+void set_fvector(Opt<Vec3f>& target, const scs_value_t& value) {
+    if (value.type == SCS_VALUE_TYPE_fvector) {
+        target.set(Vec3f{value.value_fvector.x, value.value_fvector.y, value.value_fvector.z});
+    }
+}
 void set_bool(Opt<bool>& target, const scs_value_t& value) {
     if (value.type == SCS_VALUE_TYPE_bool) target.set(value.value_bool.value != 0);
 }
@@ -323,9 +329,18 @@ void apply_truck_config(const scs_named_value_t* attributes) {
         else if (is(a->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_forward_gear_count)) set_u32(config.forward_gears, v);
         else if (is(a->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_reverse_gear_count)) set_u32(config.reverse_gears, v);
         else if (is(a->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_retarder_step_count)) set_u32(config.retarder_steps, v);
-        else if (is(a->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_wheel_steerable) && a->index < kMaxWheels &&
-                 v.type == SCS_VALUE_TYPE_bool) {
+        else if (is(a->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_wheel_count)) set_u32(config.wheel_count, v);
+        else if (is(a->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_hook_position)) set_fvector(config.hook_position_m, v);
+        else if (is(a->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_wheel_position) && a->index < kMaxWheels) {
+            set_fvector(config.wheels[a->index].position_m, v);
+        } else if (is(a->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_wheel_radius) && a->index < kMaxWheels) {
+            set_float(config.wheels[a->index].radius_m, v);
+        } else if (is(a->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_wheel_powered) && a->index < kMaxWheels) {
+            set_bool(config.wheels[a->index].powered, v);
+        } else if (is(a->name, SCS_TELEMETRY_CONFIG_ATTRIBUTE_wheel_steerable) && a->index < kMaxWheels &&
+                   v.type == SCS_VALUE_TYPE_bool) {
             steerable[a->index] = v.value_bool.value != 0;
+            config.wheels[a->index].steerable.set(steerable[a->index]);
         }
     }
     // An empty configuration means the truck was removed; all values become absent.

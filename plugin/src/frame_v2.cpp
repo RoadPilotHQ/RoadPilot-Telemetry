@@ -42,6 +42,39 @@ public:
         }
     }
 
+    // Arrays keep their elements even when empty so that positions stay meaningful; the
+    // array itself is rolled back when it has no element.
+    void begin_array(const char* key) {
+        const std::size_t start = out_.size();
+        const std::size_t parent_fields = stack_[depth_ - 1].fields;
+        key_prefix(key);
+        out_.push_back('[');
+        stack_[depth_++] = Level{start, parent_fields, false};
+        stack_[depth_ - 1].fields = 0;
+    }
+
+    void end_array() {
+        const Level level = stack_[--depth_];
+        if (level.fields == 0) {
+            out_.resize(level.start);
+            stack_[depth_ - 1].fields = level.parent_fields;
+        } else {
+            out_.push_back(']');
+        }
+    }
+
+    void begin_element() {
+        Level& level = stack_[depth_ - 1];
+        if (level.fields++ > 0) out_.push_back(',');
+        out_.push_back('{');
+        stack_[depth_++] = Level{out_.size() - 1, 0, false};
+    }
+
+    void end_element() {
+        --depth_;
+        out_.push_back('}');
+    }
+
     void string(const char* key, const std::string& value) {
         key_prefix(key);
         out_.push_back('"');
@@ -226,6 +259,23 @@ void serialize_frame_v2(const FrameHeader& header, const DynamicState& d, const 
     w.opt_number("forwardGears", c.forward_gears);
     w.opt_number("reverseGears", c.reverse_gears);
     w.opt_number("retarderSteps", c.retarder_steps);
+    w.opt_number("wheelCount", c.wheel_count);
+    w.opt_vec3("hookPositionM", c.hook_position_m);
+    if (c.wheel_count.has) {
+        const std::size_t count = c.wheel_count.value < kMaxWheelsReported ? c.wheel_count.value
+                                                                           : kMaxWheelsReported;
+        w.begin_array("wheels");
+        for (std::size_t idx = 0; idx < count; ++idx) {
+            const WheelConfig& wheel = c.wheels[idx];
+            w.begin_element();
+            w.opt_vec3("positionM", wheel.position_m);
+            w.opt_number("radiusM", wheel.radius_m);
+            w.opt_bool("steerable", wheel.steerable);
+            w.opt_bool("powered", wheel.powered);
+            w.end_element();
+        }
+        w.end_array();
+    }
     w.end_object();
 
     const Job& j = s.job;
