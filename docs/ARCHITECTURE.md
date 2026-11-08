@@ -38,7 +38,8 @@ The protocol belongs to RoadPilot, not to SCS or another plugin, and carries nor
 
 - Telemetry and map analysis remain independent. RoadPilot-Map parses installed game files; telemetry reports live game state.
 - No plugin installer, updater, or modification of game directories.
-- No input injection or vehicle control.
+- No input injection or vehicle control. The Telemetry SDK is read-only; steering, throttle and brake output belongs to the separate Input SDK plugin in [RoadPilot-SDK](https://github.com/RoadPilotHQ/RoadPilot-SDK), which this component does not use or depend on.
+- No derived vehicle values. The plugin reports raw configuration values (for example wheel positions); the RoadPilot application calculates the wheelbase.
 - Real ETS2/ATS compatibility can only be claimed after testing supported game versions with the matching plugin and reader.
 
 ## Tests
@@ -55,7 +56,7 @@ Automated tests cannot prove that the game delivers each value. For each game (E
 
 1. Build the plugin, copy `roadpilot-telemetry.dll` into `bin/win_x64/plugins/`, close other telemetry readers.
 2. Start the console reader (`client`), then the game; confirm the SDK plugin dialog. Expect "connected to the desktop reader" in the game log and `LIVE … v2` in the reader.
-3. Load a truck and drive: speed, RPM, gear, fuel and position must change plausibly.
+3. Load a truck and drive: speed, RPM, gear, fuel and position must change plausibly. Check `truckConfig.wheels` for the truck: wheel count, wheel positions (Z negative at the front), radius, and the steerable and powered flags.
 4. Accept a job: check source, destination, cargo, income in RoadPilot.
 5. Pause (Esc) and resume; exit and restart the game with the reader open.
 6. Record per game which fields were confirmed, with the game version.

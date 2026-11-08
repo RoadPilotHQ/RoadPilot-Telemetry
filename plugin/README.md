@@ -1,6 +1,6 @@
 # Native telemetry plugin
 
-Windows SCS Telemetry SDK plugin for ETS2 and ATS. It registers the truck, input, motion, placement, navigation, game-time and cargo-damage channels plus the configuration (truck, job) and gameplay (job delivered/cancelled) events, and writes RoadPilot [schema 2](../docs/PROTOCOL-V2.md) frames to `\.\pipe\RoadPilot.Telemetry.v1` over one persistent connection from a worker thread. See [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for threading and failure handling.
+Windows SCS Telemetry SDK plugin for ETS2 and ATS. It registers the truck, input, motion, placement, navigation, game-time and cargo-damage channels plus the configuration (truck including wheel geometry, job) and gameplay (job delivered/cancelled) events, and writes RoadPilot [schema 2](../docs/PROTOCOL-V2.md) frames to `\.\pipe\RoadPilot.Telemetry.v1` over one persistent connection from a worker thread. See [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for threading and failure handling.
 
 ## Files
 
@@ -25,4 +25,4 @@ The build output is `plugin/build/Release/roadpilot-telemetry.dll`. The build do
 
 ## Verification status
 
-The schema 2 plugin passes the automated tests above. It has **not** been run in ETS2 or ATS yet. The earlier schema 1 plugin (speed, RPM, gear) was live-tested in ATS 1.62.x.
+The schema 2 plugin passes the automated tests above. It has **not** been run in ETS2 or ATS yet, so the wheel geometry is unverified in a game as well. The earlier schema 1 plugin (speed, RPM, gear) was live-tested in ATS 1.62.x.
