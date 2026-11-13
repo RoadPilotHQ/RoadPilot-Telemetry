@@ -39,7 +39,7 @@ The definition lives in three places that are tested against each other:
 | `simulationTimeUs` | integer ≤ 2^53−1 | SDK simulation time of the frame (µs). Can restart from zero; use `sequence` for ordering. |
 | `gameTimeMin` | integer | In-game minutes since 00:00 of the first in-game day. |
 
-The reader accepts a frame if it starts a new session or has a higher sequence than the last accepted frame of the same session; older or repeated frames are dropped without closing the connection. The reader adds its own monotonic receive time; it is never sent over the wire.
+The reader accepts a frame if it starts a new session or has a higher sequence than the last accepted frame of the same session; older or repeated frames are dropped without closing the connection. A session that was replaced by another one is retired and never accepted again (the last 8 are remembered), so a late frame of a finished game cannot pass as a new session. The reader adds its own monotonic receive time; it is never sent over the wire.
 
 Schema 1 frames have no session. For them, ordering is checked within one connection only (the v1 plugin opened one connection per frame).
 
