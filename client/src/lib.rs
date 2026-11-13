@@ -13,6 +13,7 @@ use std::time::Instant;
 #[cfg(windows)]
 pub mod named_pipe;
 pub mod ordering;
+pub mod qpc;
 pub mod snapshot;
 pub mod v1;
 pub mod v2;
@@ -121,12 +122,15 @@ pub fn decode_frame(bytes: &[u8]) -> Result<DecodedFrame, DecodeError> {
 }
 
 /// A validated frame paired with the desktop reader's monotonic receive time.
-/// The receive time is local metadata and is never serialized onto the wire.
+/// The receive times are local metadata and are never serialized onto the wire.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReceivedTelemetryFrame {
     pub frame: TelemetryFrame,
     pub dropped_fields: Vec<&'static str>,
     pub received_at: Instant,
+    /// QueryPerformanceCounter value taken together with `received_at`; `None` where QPC is
+    /// unavailable. See [`qpc`] for the frame timing it enables.
+    pub received_qpc: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -198,6 +202,104 @@ mod tests {
         assert_eq!(f.navigation.unwrap().speed_limit_mps, Some(22.222));
         assert_eq!(f.motion.unwrap().wheel_steering_rot, Some(-0.03));
         assert_eq!(f.inputs.unwrap().steering_input, Some(-0.125));
+    }
+
+    // ---- QPC stamps and compatibility ----
+
+    fn received(frame: TelemetryFrame, received_qpc: Option<u64>) -> ReceivedTelemetryFrame {
+        ReceivedTelemetryFrame {
+            frame,
+            dropped_fields: Vec::new(),
+            received_at: Instant::now(),
+            received_qpc,
+        }
+    }
+
+    #[test]
+    fn new_plugin_new_client_decodes_and_evaluates_the_clock() {
+        let f = decode_frame(FULL.as_bytes()).unwrap().frame;
+        assert_eq!(f.produced_qpc, Some(123_456_789_000));
+        assert_eq!(f.sent_qpc, Some(123_456_790_500));
+        assert_eq!(f.qpc_frequency, Some(10_000_000));
+        let stamps = qpc::Stamps {
+            received: Some(123_456_791_000),
+            ..received(f, Some(123_456_791_000)).stamps()
+        };
+        let timing = qpc::evaluate(stamps, Some(10_000_000)).unwrap();
+        assert_eq!(
+            timing.plugin_processing,
+            std::time::Duration::from_micros(150)
+        );
+        assert_eq!(timing.transport, std::time::Duration::from_micros(50));
+        assert_eq!(timing.age_at_receive, std::time::Duration::from_micros(200));
+    }
+
+    #[test]
+    fn old_plugin_new_client_decodes_without_timing() {
+        // The minimal fixture has no clock fields, exactly like a frame of the previous plugin.
+        let f = decode_frame(MINIMAL.as_bytes()).unwrap().frame;
+        assert_eq!(
+            (f.produced_qpc, f.sent_qpc, f.qpc_frequency),
+            (None, None, None)
+        );
+        let frame = received(f, Some(5));
+        assert_eq!(
+            qpc::evaluate(frame.stamps(), Some(10_000_000)),
+            Err(qpc::TimingError::Missing(qpc::Stamp::Produced))
+        );
+        // A schema 1 frame cannot carry them either.
+        let v1 = decode_frame(V1.as_bytes()).unwrap().frame;
+        assert_eq!(v1.produced_qpc, None);
+    }
+
+    #[test]
+    fn new_plugin_old_client_ignores_the_clock_fields() {
+        // An older reader's model has no clock fields; serde ignores unknown fields, so the
+        // frame decodes unchanged. (Also checked against the previous client release; see
+        // docs/PROTOCOL-V2.md.)
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct OlderReader {
+            session: Option<u64>,
+            sequence: u64,
+            simulation_time_us: Option<u64>,
+        }
+        let older: OlderReader = serde_json::from_str(FULL).unwrap();
+        assert_eq!(older.session, Some(4_242_424_242));
+        assert_eq!(older.sequence, 1234);
+        assert_eq!(older.simulation_time_us, Some(98_765_432));
+    }
+
+    #[test]
+    fn invalid_clock_values_are_dropped_not_trusted() {
+        let corrupt = FULL
+            .replace("\"producedQpc\": 123456789000", "\"producedQpc\": 0")
+            .replace("\"sentQpc\": 123456790500", "\"sentQpc\": 9007199254740992")
+            .replace("\"qpcFrequency\": 10000000", "\"qpcFrequency\": 0");
+        let decoded = decode_frame(corrupt.as_bytes()).unwrap();
+        assert_eq!(
+            decoded.dropped_fields,
+            ["producedQpc", "sentQpc", "qpcFrequency"]
+        );
+        let f = decoded.frame;
+        assert_eq!(
+            (f.produced_qpc, f.sent_qpc, f.qpc_frequency),
+            (None, None, None)
+        );
+        // A negative or fractional value is not a tick count: the frame is malformed.
+        for bad in ["-5", "1.5", "\"7\""] {
+            let malformed = FULL.replace(
+                "\"producedQpc\": 123456789000",
+                &format!("\"producedQpc\": {bad}"),
+            );
+            assert!(
+                matches!(
+                    decode_frame(malformed.as_bytes()),
+                    Err(DecodeError::InvalidJson(_))
+                ),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

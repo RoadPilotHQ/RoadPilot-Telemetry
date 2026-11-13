@@ -90,6 +90,8 @@ where
             latest.send_replace(Some(ReceivedTelemetryFrame {
                 frame,
                 dropped_fields,
+                // Both taken together, after the frame was read and decoded.
+                received_qpc: crate::qpc::now(),
                 received_at: std::time::Instant::now(),
             }));
         }

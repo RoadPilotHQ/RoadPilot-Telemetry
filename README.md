@@ -62,6 +62,12 @@ ctest --test-dir plugin/build -C Release --output-on-failure
 
 The serializer tests alone need no SDK: configure with `-DROADPILOT_BUILD_PLUGIN=OFF`. The plugin host test uses the real pipe name, so RoadPilot and the console reader must be closed while it runs.
 
+Cross-process clock test (after the plugin build, with RoadPilot and the console reader closed): the real plugin runs in its own host process and the client checks every frame's QPC stamps against its own clock (see the transport clock section of [docs/PROTOCOL-V2.md](docs/PROTOCOL-V2.md)). The part without the plugin runs with the normal `cargo test`.
+
+```powershell
+cargo test --manifest-path client/Cargo.toml --test qpc_cross_process -- --ignored --nocapture
+```
+
 ## Installation
 
 Copy `plugin/build/Release/roadpilot-telemetry.dll` into the game's `bin/win_x64/plugins/` folder (create it if needed), separately for ETS2 and ATS. Nothing in this repository installs or modifies game files. The game asks once to confirm the use of SDK plugins.

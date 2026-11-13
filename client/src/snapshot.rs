@@ -189,6 +189,7 @@ mod tests {
             frame: decoded.frame,
             dropped_fields: decoded.dropped_fields,
             received_at: Instant::now(),
+            received_qpc: None,
         }
     }
 

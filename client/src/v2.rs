@@ -28,6 +28,17 @@ pub struct TelemetryFrame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_version: Option<String>,
     pub plugin_state: PluginState,
+    /// QueryPerformanceCounter value when the game finished this frame (`FRAME_END`). QPC
+    /// ticks; compare only with QPC values of the same machine. See [`crate::qpc`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub produced_qpc: Option<u64>,
+    /// QueryPerformanceCounter value immediately before the plugin serialized and wrote
+    /// this frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_qpc: Option<u64>,
+    /// The plugin's QPC frequency in ticks per second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qpc_frequency: Option<u64>,
     /// SDK simulation time of the frame in microseconds. May restart from zero when the
     /// game restarts its timers; ordering must use `sequence`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -302,6 +313,9 @@ impl TelemetryFrame {
             game,
             game_version: None,
             plugin_state,
+            produced_qpc: None,
+            sent_qpc: None,
+            qpc_frequency: None,
             simulation_time_us: None,
             game_time_min: None,
             local_scale: None,
@@ -352,6 +366,11 @@ impl TelemetryFrame {
             self.game_version = None;
             d.0.push("gameVersion");
         }
+        // A QPC value of 0 or beyond the exactly representable range, and a zero frequency,
+        // cannot be real; they are removed like any other corrupt value.
+        d.qpc(&mut self.produced_qpc, 1, "producedQpc");
+        d.qpc(&mut self.sent_qpc, 1, "sentQpc");
+        d.qpc(&mut self.qpc_frequency, 1, "qpcFrequency");
         d.f32(&mut self.local_scale, 0.0, 1_000.0, "localScale");
         if let Some(t) = &mut self.truck {
             d.f32(&mut t.speed_mps, -150.0, 150.0, "truck.speedMps");
@@ -552,6 +571,14 @@ impl Dropped {
 
     fn i32(&mut self, v: &mut Option<i32>, min: i32, max: i32, name: &'static str) {
         if v.is_some_and(|x| !(min..=max).contains(&x)) {
+            *v = None;
+            self.0.push(name);
+        }
+    }
+
+    /// A QPC tick count or frequency: at least `min` and exactly representable in JSON.
+    fn qpc(&mut self, v: &mut Option<u64>, min: u64, name: &'static str) {
+        if v.is_some_and(|x| !(min..=crate::MAX_SAFE_INTEGER).contains(&x)) {
             *v = None;
             self.0.push(name);
         }

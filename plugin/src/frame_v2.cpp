@@ -183,6 +183,11 @@ void serialize_frame_v2(const FrameHeader& header, const DynamicState& d, const 
     w.raw("game", header.game[0] == 'a' ? "\"ats\"" : "\"ets2\"");
     if (!header.game_version.empty()) w.string("gameVersion", header.game_version);
     w.raw("pluginState", d.running ? "\"running\"" : "\"paused\"");
+    const FrameClock& clock = header.clock;
+    const auto safe = [](const Opt<std::uint64_t>& v) { return v.has && v.value <= kMaxSafeInteger; };
+    if (safe(clock.produced_qpc)) w.number("producedQpc", clock.produced_qpc.value);
+    if (safe(clock.sent_qpc)) w.number("sentQpc", clock.sent_qpc.value);
+    if (safe(clock.qpc_frequency) && clock.qpc_frequency.value > 0) w.number("qpcFrequency", clock.qpc_frequency.value);
     w.opt_number("simulationTimeUs", d.simulation_time_us);
     w.opt_number("gameTimeMin", d.game_time_min);
     w.opt_number("localScale", d.local_scale);

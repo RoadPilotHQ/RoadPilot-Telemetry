@@ -43,6 +43,35 @@ The reader accepts a frame if it starts a new session or has a higher sequence t
 
 Schema 1 frames have no session. For them, ordering is checked within one connection only (the v1 plugin opened one connection per frame).
 
+## Transport clock (QPC)
+
+Optional since the plugin release after `febef76`, still schema 2. Windows `QueryPerformanceCounter` (QPC) is one system-wide monotonic counter, so values taken in the game process and in the reader's process are directly comparable on the same machine. The client verifies this in `client/tests/qpc_cross_process.rs`.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `producedQpc` | integer 1..2^53−1 | QPC ticks when the game finished this frame (`FRAME_END`, game thread). |
+| `sentQpc` | integer 1..2^53−1 | QPC ticks immediately before the plugin's worker serialized and wrote the frame. |
+| `qpcFrequency` | integer 1..2^53−1 | QPC ticks per second (`QueryPerformanceFrequency`), fixed at boot. |
+
+The reader adds `received_qpc` together with its monotonic receive time, after reading and decoding, when it hands the frame on (never sent over the wire). From the three stamps it derives, with `client::qpc::evaluate`:
+
+- **plugin processing** = `sentQpc − producedQpc`: waiting for the worker, its 60 Hz pacing and a blocked previous write;
+- **transport** = `received − sentQpc`: serialization, the write, the pipe, the reader's read and decode;
+- **age at receive** = `received − producedQpc`: the frame's absolute age; `qpc::age_at` gives it for any later QPC time.
+
+Ticks convert exactly as `ticks / frequency` seconds in integer arithmetic (whole seconds plus the remainder in nanoseconds, truncated); it cannot overflow. A timing is valid only if all stamps are present, `qpcFrequency` equals the reader's own frequency, `producedQpc ≤ sentQpc ≤ received`, and the produced-to-received span is at most 60 s. Anything else is an error, never a duration: a negative, backwards or implausible difference is never reported as a low latency.
+
+The plugin omits a stamp it cannot take or that exceeds 2^53−1, and the frequency if it is zero. The reader removes a value of 0 or above 2^53−1 as invalid (`dropped_fields`) and keeps the frame; a negative, fractional or non-integer value makes the frame malformed.
+
+| Plugin | Reader | Result |
+|---|---|---|
+| previous (no clock fields) | current | Frames decode unchanged; timing is `Missing(Produced)`. |
+| current | current | Frames decode with the stamps; timing is evaluated. |
+| current | previous (`ca64c8e`) | Unknown fields are ignored; frames decode unchanged (checked: the previous client passes its tests against the current full fixture). |
+| any | without QPC (non-Windows) | `received_qpc` is absent; timing is `Missing(Received)`. |
+
+A frame without a valid timing remains usable for display and dry-run diagnostics. Its age is unknown, so a consumer that makes control decisions must not treat it as fresh on that basis; RoadPilot will require a valid timing before any live output may be enabled.
+
 ## Validation
 
 - **Whole frame rejected:** wrong `protocol`, unsupported `schemaVersion`, missing `session` in schema 2, integers above 2^53−1, malformed JSON or wrong JSON types.
@@ -65,6 +94,7 @@ All fields except the envelope are optional. **Absent means the game did not pro
 | `gameVersion` | string | SDK telemetry game version `major.minor` (e.g. ETS2 `1.21`), not the game patch number |
 | `pluginState` | `running` \| `paused` | From the SDK started/paused events |
 | `simulationTimeUs`, `gameTimeMin` | integer | See ordering |
+| `producedQpc`, `sentQpc`, `qpcFrequency` | integer | See transport clock |
 | `localScale` | number | Map scale applied to time and distance |
 
 ### `truck`

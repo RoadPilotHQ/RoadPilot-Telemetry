@@ -125,11 +125,21 @@ struct StaticState {
     Job job;
 };
 
+// Transport timestamps in Windows QueryPerformanceCounter ticks. QPC is one system-wide
+// monotonic counter, so a reader in another process can compare them with its own readings.
+// Each is serialized only if present and at most kMaxSafeInteger; the frequency only if > 0.
+struct FrameClock {
+    Opt<std::uint64_t> produced_qpc;   // FRAME_END of the game frame this snapshot belongs to
+    Opt<std::uint64_t> sent_qpc;       // worker, immediately before serializing and writing
+    Opt<std::uint64_t> qpc_frequency;  // QPC ticks per second (QueryPerformanceFrequency)
+};
+
 struct FrameHeader {
     std::uint64_t session = 0;
     std::uint64_t sequence = 0;
     const char* game = "ets2";  // "ets2" or "ats"
     std::string game_version;   // SDK telemetry game version "major.minor"; empty = absent
+    FrameClock clock;
 };
 
 // Writes one compact JSON frame into `out` (cleared first; its capacity is reused).

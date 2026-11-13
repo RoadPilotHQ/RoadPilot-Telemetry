@@ -5,6 +5,10 @@
 // FRAME_END the stage is copied once into `g_shared` under a mutex, and a worker thread
 // serializes the newest frame and writes it to the RoadPilot named pipe. Pipe I/O never
 // happens on the game thread, so a slow or missing reader cannot stall the game.
+//
+// Clock: FRAME_END stamps the snapshot with QueryPerformanceCounter (producedQpc); the worker
+// stamps sentQpc right before serializing, and every frame carries qpcFrequency. See the
+// transport clock section of docs/PROTOCOL-V2.md.
 
 #include <windows.h>
 
@@ -66,6 +70,7 @@ struct Shared {
     StaticState stat;
     std::uint64_t static_version = 0;
     std::uint64_t sequence = 0;
+    Opt<std::uint64_t> produced_qpc;  // QPC at FRAME_END of the frame in `dynamic`
     bool dirty = false;
     bool stopping = false;
 };
@@ -107,6 +112,27 @@ void report_transport_status() {
             break;
     }
     log_message(state == kConnected ? SCS_LOG_TYPE_message : SCS_LOG_TYPE_warning, message);
+}
+
+// Current QueryPerformanceCounter value; absent if the call fails or the value cannot be
+// represented exactly in JSON.
+Opt<std::uint64_t> qpc_now() {
+    Opt<std::uint64_t> out;
+    LARGE_INTEGER counter;
+    if (QueryPerformanceCounter(&counter) && counter.QuadPart >= 0 &&
+        static_cast<std::uint64_t>(counter.QuadPart) <= kMaxSafeInteger) {
+        out.set(static_cast<std::uint64_t>(counter.QuadPart));
+    }
+    return out;
+}
+
+Opt<std::uint64_t> qpc_frequency() {
+    Opt<std::uint64_t> out;
+    LARGE_INTEGER frequency;
+    if (QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0) {
+        out.set(static_cast<std::uint64_t>(frequency.QuadPart));
+    }
+    return out;
 }
 
 std::uint64_t make_session_id() {
@@ -176,6 +202,7 @@ void transport_worker() {
                 static_version = g_shared.static_version;
             }
             header.sequence = g_shared.sequence;
+            header.clock.produced_qpc = g_shared.produced_qpc;
         }
         last_send = std::chrono::steady_clock::now();
 
@@ -189,6 +216,8 @@ void transport_worker() {
                 continue;
             }
         }
+        // Taken as late as possible: serialization and the write follow immediately.
+        header.clock.sent_qpc = qpc_now();
         serialize_frame_v2(header, dynamic, stat, payload);
 
         const auto length = static_cast<std::uint32_t>(payload.size());
@@ -418,6 +447,8 @@ SCSAPI_VOID on_pause_change(const scs_event_t event, const void*, const scs_cont
 }
 
 SCSAPI_VOID on_frame_end(const scs_event_t, const void*, const scs_context_t) {
+    // The frame is complete when FRAME_END arrives; stamp it before any other work.
+    const Opt<std::uint64_t> produced = qpc_now();
     // Physical steering angle of the first steerable wheel.
     Opt<float> steering;
     for (scs_u32_t i = 0; i < kMaxWheels; ++i) {
@@ -436,6 +467,7 @@ SCSAPI_VOID on_frame_end(const scs_event_t, const void*, const scs_context_t) {
             g_shared.static_version = g_stage.static_version;
         }
         if (g_shared.sequence < kMaxSafeInteger) ++g_shared.sequence;
+        g_shared.produced_qpc = produced;
         g_shared.dirty = true;
     }
     g_changed.notify_one();
@@ -560,6 +592,7 @@ SCSAPI_RESULT scs_telemetry_init(const scs_u32_t version, const scs_telemetry_in
                   static_cast<unsigned>(SCS_GET_MAJOR_VERSION(p->common.game_version)),
                   static_cast<unsigned>(SCS_GET_MINOR_VERSION(p->common.game_version)));
     g_header.game_version = game_version;
+    g_header.clock.qpc_frequency = qpc_frequency();
     g_transport_state.store(kStarting, std::memory_order_relaxed);
     g_transport_error.store(ERROR_SUCCESS, std::memory_order_relaxed);
     g_reported_transport_state = -1;

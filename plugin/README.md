@@ -7,7 +7,7 @@ Windows SCS Telemetry SDK plugin for ETS2 and ATS. It registers the truck, input
 - `src/plugin.cpp` — SDK glue: registration, callbacks, transport worker.
 - `src/frame_v2.hpp`, `src/frame_v2.cpp` — data model and JSON serializer, no SDK dependency.
 - `tests/frame_v2_tests.cpp` — serializer tests against `../schemas/fixtures`.
-- `tests/plugin_host_tests.cpp` — loads the built DLL in a fake SCS host and talks to it over the real pipe.
+- `tests/plugin_host_tests.cpp` — loads the built DLL in a fake SCS host and talks to it over the real pipe. With `--drive <seconds>` it only plays frames into the plugin, for a reader in another process (the client's cross-process clock test).
 
 ## Build and test
 

@@ -6,6 +6,10 @@
 //
 // It uses the real pipe name \\.\pipe\RoadPilot.Telemetry.v1, so RoadPilot and the console
 // reader must not be running while it executes.
+//
+// With `--drive <seconds>` it only plays frames into the loaded plugin and does not open the
+// pipe: the reader is another process. The client's cross-process QPC test uses this mode, so
+// that the plugin's timestamps come from a different process than the reader's.
 
 #include <windows.h>
 
@@ -119,6 +123,21 @@ void play_frame(scs_timestamp_t time_us, float speed) {
 
 // ---------------------------------------------------------------- pipe reader
 
+unsigned long long qpc_now() {
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    return static_cast<unsigned long long>(counter.QuadPart);
+}
+
+unsigned long long qpc_frequency() {
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    return static_cast<unsigned long long>(frequency.QuadPart);
+}
+
+// QPC value taken by the reader right after each frame read by read_frames().
+std::vector<unsigned long long> g_received_qpc;
+
 const wchar_t kPipe[] = L"\\\\.\\pipe\\RoadPilot.Telemetry.v1";
 
 HANDLE create_server() {
@@ -146,6 +165,7 @@ std::vector<std::string> read_frames(HANDLE pipe, size_t count, const char* stop
         const DWORD length = prefix[0] | (prefix[1] << 8) | (prefix[2] << 16) | (DWORD(prefix[3]) << 24);
         std::string payload(length, '\0');
         if (!read_exact(pipe, payload.data(), length)) break;
+        g_received_qpc.push_back(qpc_now());
         frames.push_back(payload);
         if (stop_at && payload.find(stop_at) != std::string::npos) break;
     }
@@ -166,6 +186,7 @@ bool contains(const std::string& haystack, const char* needle) {
 std::vector<std::string> exchange(HANDLE server, size_t count, scs_timestamp_t& time_us, float speed,
                                   const char* stop_at = nullptr) {
     std::vector<std::string> frames;
+    g_received_qpc.clear();
     std::thread reader([&] { frames = read_frames(server, count, stop_at); });
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -198,21 +219,10 @@ bool accept_while_playing(HANDLE server, scs_timestamp_t& time_us) {
     return connected;
 }
 
-}  // namespace
+typedef SCSAPI_RESULT_FPTR(init_t)(scs_u32_t, const scs_telemetry_init_params_t*);
+typedef SCSAPI_VOID_FPTR(shutdown_t)(void);
 
-int main() {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-    HMODULE dll = LoadLibraryA(ROADPILOT_PLUGIN_PATH);
-    if (!dll) {
-        std::printf("FAILED: cannot load %s\n", ROADPILOT_PLUGIN_PATH);
-        return 1;
-    }
-    typedef SCSAPI_RESULT_FPTR(init_t)(scs_u32_t, const scs_telemetry_init_params_t*);
-    typedef SCSAPI_VOID_FPTR(shutdown_t)(void);
-    auto init = reinterpret_cast<init_t>(GetProcAddress(dll, "scs_telemetry_init"));
-    auto shutdown = reinterpret_cast<shutdown_t>(GetProcAddress(dll, "scs_telemetry_shutdown"));
-    check(init && shutdown, "exports present");
-
+scs_telemetry_init_params_v100_t make_params() {
     scs_telemetry_init_params_v100_t params;
     params.common.game_name = "Euro Truck Simulator 2";
     params.common.game_id = SCS_GAME_ID_EUT2;
@@ -222,6 +232,50 @@ int main() {
     params.unregister_from_event = unregister_event;
     params.register_for_channel = register_channel;
     params.unregister_from_channel = unregister_channel;
+    return params;
+}
+
+// `--drive <seconds>`: plays frames at about 60 Hz into the plugin, which writes them to
+// whatever reader owns the pipe in another process. Exit code 0 if the plugin initialized.
+int drive(init_t init, shutdown_t shutdown, int seconds) {
+    scs_telemetry_init_params_v100_t params = make_params();
+    if (init(SCS_TELEMETRY_VERSION_1_01, &params) != SCS_RESULT_ok) {
+        std::printf("FAILED: init\n");
+        return 1;
+    }
+    fire(SCS_TELEMETRY_EVENT_started, nullptr);
+    scs_timestamp_t time_us = 0;
+    int frames = 0;
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    while (std::chrono::steady_clock::now() < end) {
+        play_frame(time_us += 16667, 10.0f);
+        ++frames;
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    shutdown();
+    std::printf("drive: played %d frames\n", frames);
+    return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    HMODULE dll = LoadLibraryA(ROADPILOT_PLUGIN_PATH);
+    if (!dll) {
+        std::printf("FAILED: cannot load %s\n", ROADPILOT_PLUGIN_PATH);
+        return 1;
+    }
+    auto init = reinterpret_cast<init_t>(GetProcAddress(dll, "scs_telemetry_init"));
+    auto shutdown = reinterpret_cast<shutdown_t>(GetProcAddress(dll, "scs_telemetry_shutdown"));
+    check(init && shutdown, "exports present");
+    if (argc == 3 && std::strcmp(argv[1], "--drive") == 0 && init && shutdown) {
+        const int code = drive(init, shutdown, std::atoi(argv[2]));
+        FreeLibrary(dll);
+        return code;
+    }
+
+    scs_telemetry_init_params_v100_t params = make_params();
 
     // Unknown games are rejected.
     scs_telemetry_init_params_v100_t other = params;
@@ -260,6 +314,33 @@ int main() {
     check(accept_while_playing(server, time_us), "plugin connects");
     std::vector<std::string> first = exchange(server, 20, time_us, 20.0f);
     check(first.size() == 20, "20 frames on one connection");
+    // Clock: every frame carries its QPC stamps and this machine's QPC frequency, in the
+    // order produced <= sent <= received, increasing from frame to frame.
+    if (first.size() == 20 && g_received_qpc.size() == 20) {
+        const unsigned long long frequency = qpc_frequency();
+        bool present = true, ordered = true, increasing = true, plausible = true, same_frequency = true;
+        unsigned long long previous_produced = 0, previous_sent = 0;
+        for (size_t i = 0; i < first.size(); ++i) {
+            const std::string& f = first[i];
+            present = present && contains(f, "\"producedQpc\":") && contains(f, "\"sentQpc\":") &&
+                      contains(f, "\"qpcFrequency\":");
+            const unsigned long long produced = number_after(f, "producedQpc");
+            const unsigned long long sent = number_after(f, "sentQpc");
+            const unsigned long long received = g_received_qpc[i];
+            same_frequency = same_frequency && number_after(f, "qpcFrequency") == frequency;
+            ordered = ordered && produced > 0 && produced <= sent && sent <= received;
+            increasing = increasing && produced > previous_produced && sent > previous_sent;
+            // Produced to received well under one second on an idle test host.
+            plausible = plausible && received - produced < frequency;
+            previous_produced = produced;
+            previous_sent = sent;
+        }
+        check(present, "every frame has producedQpc, sentQpc and qpcFrequency");
+        check(same_frequency, "qpcFrequency equals the reader's QueryPerformanceFrequency");
+        check(ordered, "producedQpc <= sentQpc <= received QPC");
+        check(increasing, "QPC stamps increase from frame to frame");
+        check(plausible, "produced to received below one second");
+    }
     if (first.size() == 20) {
         const std::string& f = first.back();
         check(contains(f, "\"schemaVersion\":2"), "schema 2");

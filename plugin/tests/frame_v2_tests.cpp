@@ -72,6 +72,9 @@ void full_frame_matches_shared_fixture() {
     h.sequence = 1234;
     h.game = "ets2";
     h.game_version = "1.21";
+    h.clock.produced_qpc.set(123456789000ULL);
+    h.clock.sent_qpc.set(123456790500ULL);
+    h.clock.qpc_frequency.set(10000000ULL);
 
     DynamicState d;
     d.running = true;
@@ -202,6 +205,30 @@ void writes_large_integers_exactly() {
     check(kMaxSafeInteger == 9007199254740991ULL, "constant is not truncated");
 }
 
+void clock_fields_are_written_only_when_valid() {
+    FrameHeader h;
+    h.session = 1;
+    // Absent: no field at all (an older reader and the minimal fixture look the same).
+    std::string json = serialize(h, DynamicState{}, StaticState{});
+    check(json.find("Qpc") == std::string::npos && json.find("qpcFrequency") == std::string::npos,
+          "absent clock fields are omitted");
+    // Present and valid, at the largest value a JSON reader represents exactly.
+    h.clock.produced_qpc.set(kMaxSafeInteger - 1);
+    h.clock.sent_qpc.set(kMaxSafeInteger);
+    h.clock.qpc_frequency.set(10000000ULL);
+    json = serialize(h, DynamicState{}, StaticState{});
+    check(json.find("\"producedQpc\":9007199254740990,\"sentQpc\":9007199254740991,\"qpcFrequency\":10000000") !=
+              std::string::npos,
+          "valid clock fields in order");
+    // Beyond the safe range, or a zero frequency: omitted rather than written inexactly.
+    h.clock.produced_qpc.set(kMaxSafeInteger + 1);
+    h.clock.sent_qpc.set(~0ULL);
+    h.clock.qpc_frequency.set(0);
+    json = serialize(h, DynamicState{}, StaticState{});
+    check(json.find("Qpc") == std::string::npos && json.find("qpcFrequency") == std::string::npos,
+          "unsafe values and a zero frequency are omitted");
+}
+
 void job_states() {
     FrameHeader h;
     h.session = 1;
@@ -245,6 +272,7 @@ int main() {
     omits_non_finite_values_and_empty_sections();
     escapes_strings();
     writes_large_integers_exactly();
+    clock_fields_are_written_only_when_valid();
     job_states();
     numbers_ignore_the_c_locale();
     reuses_the_output_buffer();
